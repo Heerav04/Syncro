@@ -2,8 +2,9 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User as FirebaseUser, onAuthStateChanged, signOut } from 'firebase/auth';
-import { auth } from '@/lib/firebase/client';
-import { CustomClaims } from '@/types';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase/client';
+import { CustomClaims, UserRole } from '@/types';
 
 interface AuthContextType {
   user: FirebaseUser | null;
@@ -34,11 +35,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           // Extract custom claims from the token
           const decodedToken = await firebaseUser.getIdTokenResult();
-          setClaims({
-            companyId: decodedToken.claims.companyId as string,
-            role: (decodedToken.claims.role as any) || 'member',
-            teamId: (decodedToken.claims.teamId as string) || undefined,
-          });
+          const role = decodedToken.claims.role as UserRole | undefined;
+          const tokenCompanyId = decodedToken.claims.companyId as string | undefined;
+
+          if (tokenCompanyId) {
+            setClaims({
+              companyId: tokenCompanyId,
+              role: role || 'member',
+              teamId: (decodedToken.claims.teamId as string) || undefined,
+            });
+            return;
+          }
+
+          const fallbackCompanyId = window.localStorage.getItem('collabwork.companyId');
+          if (fallbackCompanyId) {
+            const profile = await getDoc(
+              doc(db, 'companies', fallbackCompanyId, 'users', firebaseUser.uid)
+            );
+            if (profile.exists()) {
+              const data = profile.data() as CustomClaims;
+              setClaims({
+                companyId: fallbackCompanyId,
+                role: data.role || 'member',
+                teamId: data.teamId || undefined,
+              });
+              return;
+            }
+          }
+
+          setClaims(null);
         } catch (error) {
           console.error('Error getting token:', error);
           setClaims(null);

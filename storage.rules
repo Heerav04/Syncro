@@ -1,7 +1,42 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Deny all by default - rules will be incrementally opened per phase
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function email() {
+      return request.auth.token.email;
+    }
+
+    function isMemberOfCompany(companyId) {
+      return isSignedIn() && (
+        firestore.exists(/databases/(default)/documents/companies/$(companyId)/users/$(request.auth.uid)) ||
+        firestore.exists(/databases/(default)/documents/companies/$(companyId)/users/$(email()))
+      );
+    }
+
+    function role(companyId) {
+      return firestore.exists(/databases/(default)/documents/companies/$(companyId)/users/$(request.auth.uid))
+        ? firestore.get(/databases/(default)/documents/companies/$(companyId)/users/$(request.auth.uid)).data.role
+        : firestore.get(/databases/(default)/documents/companies/$(companyId)/users/$(email())).data.role;
+    }
+
+    function canManageTeams(companyId) {
+      return isMemberOfCompany(companyId) && role(companyId) in ['superAdmin', 'companyAdmin', 'teamLead'];
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && userId in [request.auth.uid, email()];
+    }
+
+    match /companies/{companyId}/uploads/{userId}/{allPaths=**} {
+      allow read: if isMemberOfCompany(companyId) && (canManageTeams(companyId) || isOwner(userId));
+      allow write: if isMemberOfCompany(companyId) &&
+        (canManageTeams(companyId) || isOwner(userId)) &&
+        request.resource.size < 25 * 1024 * 1024;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

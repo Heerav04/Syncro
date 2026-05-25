@@ -1,63 +1,112 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function isCompanyAdmin() {
-      return isSignedIn() && request.auth.token.role == 'companyAdmin';
+    function email() {
+      return request.auth.token.email;
     }
 
-    function isSuperAdmin() {
-      return isSignedIn() && request.auth.token.role == 'superAdmin';
+    function aliases() {
+      return [request.auth.uid, email()];
     }
 
-    function userCompanyId() {
-      return request.auth.token.companyId;
+    function isMemberOfCompany(companyId) {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid)) ||
+        exists(/databases/$(database)/documents/companies/$(companyId)/users/$(email()))
+      );
     }
 
-    // Companies collection
+    function profile(companyId) {
+      return exists(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid))
+        : get(/databases/$(database)/documents/companies/$(companyId)/users/$(email()));
+    }
+
+    function role(companyId) {
+      return profile(companyId).data.role;
+    }
+
+    function canManageCompany(companyId) {
+      return isMemberOfCompany(companyId) && role(companyId) in ['superAdmin', 'companyAdmin'];
+    }
+
+    function canManageTeams(companyId) {
+      return isMemberOfCompany(companyId) && role(companyId) in ['superAdmin', 'companyAdmin', 'teamLead'];
+    }
+
+    function canReadTeam(companyId, teamId) {
+      return isMemberOfCompany(companyId) && (
+        canManageTeams(companyId) ||
+        resource.data.leadId in aliases() ||
+        resource.data.memberIds.hasAny(aliases())
+      );
+    }
+
+    function canReadTask(companyId) {
+      return canManageTeams(companyId) || resource.data.assigneeId in aliases();
+    }
+
+    function canWriteTask(companyId) {
+      return canManageTeams(companyId) ||
+        (isMemberOfCompany(companyId) &&
+          resource.data.assigneeId in aliases() &&
+          request.resource.data.assigneeId == resource.data.assigneeId &&
+          request.resource.data.completedBy in aliases());
+    }
+
+    function canReadAttendance(companyId) {
+      return canManageTeams(companyId) || resource.data.userId in aliases();
+    }
+
     match /companies/{companyId} {
-      // Allow read only for authenticated users of that company
-      allow read: if isSignedIn() && userCompanyId() == companyId;
-      allow write: if isSuperAdmin();
+      allow create: if isSignedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow read: if isMemberOfCompany(companyId);
+      allow update: if canManageCompany(companyId);
+      allow delete: if false;
 
-      // Users sub-collection (Phase 2)
       match /users/{userId} {
-        // Each user can read their own profile
-        allow read: if isSignedIn() &&
-          (userId == request.auth.uid || isCompanyAdmin() || isSuperAdmin()) &&
-          userCompanyId() == companyId;
-
-        // Company admins can create and manage users
-        allow create, update, delete: if isCompanyAdmin() && userCompanyId() == companyId;
+        allow create: if canManageTeams(companyId) ||
+          (isSignedIn() && userId in aliases());
+        allow read: if canManageTeams(companyId) ||
+          (isSignedIn() && userId in aliases()) ||
+          (isSignedIn() && resource.data.email == email());
+        allow update: if canManageTeams(companyId) ||
+          (isSignedIn() && userId in aliases()) ||
+          (isSignedIn() && resource.data.email == email());
+        allow delete: if canManageCompany(companyId) && !(userId in aliases());
       }
 
-      // Teams sub-collection (Phase 3)
       match /teams/{teamId} {
-        // Team members can read team data
-        allow read: if isSignedIn() && userCompanyId() == companyId;
+        allow read: if canReadTeam(companyId, teamId);
+        allow create, update: if canManageTeams(companyId);
+        allow delete: if canManageCompany(companyId);
 
-        // Company admins can manage teams
-        allow create, update, delete: if isCompanyAdmin() && userCompanyId() == companyId;
-
-        // Tasks sub-collection (Phase 4)
         match /tasks/{taskId} {
-          allow read: if isSignedIn() && userCompanyId() == companyId;
-          allow write: if isCompanyAdmin() && userCompanyId() == companyId;
+          allow read: if isMemberOfCompany(companyId) && canReadTask(companyId);
+          allow create: if canManageTeams(companyId);
+          allow update: if canWriteTask(companyId);
+          allow delete: if canManageTeams(companyId);
         }
 
-        // Logs sub-collection (Phase 5)
+        match /attendance/{attendanceId} {
+          allow read: if isMemberOfCompany(companyId) && canReadAttendance(companyId);
+          allow create, update: if canManageTeams(companyId) ||
+            (isMemberOfCompany(companyId) && request.resource.data.userId in aliases());
+          allow delete: if canManageCompany(companyId);
+        }
+
         match /logs/{logId} {
-          allow read: if isSignedIn() && userCompanyId() == companyId;
-          allow write: if isCompanyAdmin() && userCompanyId() == companyId;
+          allow read: if canManageTeams(companyId) || resource.data.userId in aliases();
+          allow create, update: if isMemberOfCompany(companyId) && request.resource.data.userId in aliases();
+          allow delete: if canManageCompany(companyId);
         }
       }
     }
 
-    // Deny all other paths
     match /{document=**} {
       allow read, write: if false;
     }
