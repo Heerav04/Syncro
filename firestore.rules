@@ -82,7 +82,8 @@ service cloud.firestore {
 
       match /teams/{teamId} {
         allow read: if canReadTeam(companyId, teamId);
-        allow create, update: if canManageTeams(companyId);
+        allow create, update: if canManageTeams(companyId) &&
+          (!('editorIds' in request.resource.data) || request.resource.data.editorIds.size() <= 2);
         allow delete: if canManageCompany(companyId);
 
         match /tasks/{taskId} {

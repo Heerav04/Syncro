@@ -45,7 +45,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       updates.memberIds = body.memberIds.filter((id): id is string => typeof id === 'string');
     }
     if (Array.isArray(body.editorIds)) {
-      const editorIds = body.editorIds.filter((id): id is string => typeof id === 'string').slice(0, 2);
+      const editorIds = body.editorIds.filter((id): id is string => typeof id === 'string');
+      if (editorIds.length > 2) {
+        return badRequest('Maximum 2 editors allowed per team.');
+      }
       updates.editorIds = editorIds;
     }
 
